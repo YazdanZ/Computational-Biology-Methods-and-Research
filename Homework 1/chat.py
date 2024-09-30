@@ -1,4 +1,34 @@
-import numpy as np
+import sys
+sys.setrecursionlimit(1500)
+
+
+def backtrack_all_alignments(S, T, P, i, j, S_alg, T_alg, alignments):
+    # Base case: if both sequences are aligned, store the result
+    if i == 0 and j == 0:
+        alignments.append(("".join(S_alg[::-1]), "".join(T_alg[::-1])))
+        return
+
+    # Recursively explore all possible directions (diagonal, left, top)
+    if "d" in P[i][j]:  # Diagonal move
+        S_alg.append(S[i - 1])
+        T_alg.append(T[j - 1])
+        backtrack_all_alignments(S, T, P, i - 1, j - 1, S_alg, T_alg, alignments)
+        S_alg.pop()
+        T_alg.pop()
+
+    if "l" in P[i][j]:  # Left move
+        S_alg.append("_")
+        T_alg.append(T[j - 1])
+        backtrack_all_alignments(S, T, P, i, j - 1, S_alg, T_alg, alignments)
+        S_alg.pop()
+        T_alg.pop()
+
+    if "t" in P[i][j]:  # Top move
+        S_alg.append(S[i - 1])
+        T_alg.append("_")
+        backtrack_all_alignments(S, T, P, i - 1, j, S_alg, T_alg, alignments)
+        S_alg.pop()
+        T_alg.pop()
 
 
 # TODO: modify to include slippage once I validate that NW works
@@ -46,29 +76,13 @@ def align(S, T):
                 P[i][j] += ["l"]
 
     i, j = len(S), len(T)
-    S_alg, T_alg = [], []
 
-    while i > 0 or j > 0:
-        if P[i][j][0] == "d":
-            S_alg.append(S[i - 1])
-            T_alg.append(T[j - 1])
-            i -= 1
-            j -= 1
-        elif P[i][j][0] == "l":
-            S_alg.append("_")
-            T_alg.append(T[j - 1])
-            j -= 1
-        elif P[i][j][0] == "t":
-            S_alg.append(S[i - 1])
-            T_alg.append("_")
-            i -= 1
-        elif P[i][j][0] == "x":
-            break
+    alignments = []
+    backtrack_all_alignments(S, T, P, i, j, [], [], alignments)
 
     return (
         A[m][n],
-        S_alg[::-1],
-        T_alg[::-1],
+        alignments,
     )  # Return all alignments and the final score (last matrix element)
 
 
@@ -92,19 +106,26 @@ def verify_alignment_score(S_aln, T_aln, calculated_score):
 # S = "GCAGGCAAGTGGGGCACCCGTATCCTTTCCAACTTACAAGGGTCCCCGTT"
 # T = "GTGCGCCAGAGGAAGTCACTTTATATCCGCGCACGGTACTCCTTTTTCTA"
 
-S = "APPLE"
-T = "CAPE"
+# S = "APPLE"
+# T = "CAPE"
+
+S = "TTCAGGCTGTTGTTGGCTTAGGGCTGGAAGCACAGAGTGGCTTGGCCTCAAGAGAATAGCTGGTTTCCCTAAGTTTACTTCTCTAAAACCCTGTGTTCACAAAGGCAGAGAGTCAGACCCTTCAATGGAAGGAGAGTGCTTGGGATCGATTATGTGACTTAAAGTCAGAATAGTCCTTGGGCAGTTCTCAAATGTTGGAGTGGAACATTGGGGAGGAAATTCTGAGGCAGGTATTAGAAATGAAAAGGAAACTTGAAACCTGGGCATGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCAAGGTGGGCAGATCACTGGAGGTCAGGAGTTCGAAACCAGCCTGGCCAACATGGTGAAACCCCATCTCTACTAAAAATACAGAAATTAGCCGGTCATGGTGGTGGACACCTGTAATCCCAGCTACTCAGGTGGCTAAGGCAGGAGAATCACTTCAGCCCGGGAGGTGGAGGTTGCAGTGAGCCAAGATCATACCACGGCACTCCAGCCTGGGTGACAGTGAGACTGTGGCTCAAAAAAAAAAAAAAAAAAAGGAAAATGAAACTAGAAGAGATTTCTAAAAGTCTGAGATATATTTGCTAGATTTCTAAAGAATGTGTTCTAAAACAGCAGAAGATTTTCAAGAACCGGTTTCCAAAGACAGTCTTCTAATTCCTCATTAGTAATAAGTAAAATGTTTATTGTTGTAGCTCTGGTATATAATCCATTCCTCTTAAAATATAAGACCTCTGGCATGAATATTTCATATCTATAAAATGACAGATCCCACCAGGAAGGAAGCTGTTGCTTTCTTTGAGGTGATTTTTTTCCTTTGCTCCCTGTTGCTGAAACCATACAGCTTCATAAATAATTTTGCTTGCTGAAGGAAGAAAAAGTGTTTTTCATAAACCCATTATCCAGGACTGTTTATAGCTGTTGGAAGGACTAGGTCTTCCCTAGCCCCCCCAGTGTGCAAGGGCAGTGAAGACTTGATTGTACAAAATACGTTTTGTAAATGTTGTGCTGTTAACACTGCAAATAAACTTGGTAGCAAACACTTC"
+T = "TCATAAATAATTTTGCTTGCTGAAGGAAGAAAAAGTGTTTTTCATAAACCCATTATCCAGGACTGTTTATAGCTGTTGGAAGGACTAGGTCTTCCCTAGCCCCCCCAGTGTGCAAGGGCAGTGAAGACTTGATTGTACAAAATACGTTTTGTAAATGTTGTGCTGTTAACACTGCAAATAAACTTGGTAGCAAACACTTC"
+
+# S = "TGACGTGC"
+# T = "TCGACGTCA"
+
 match_score = 1
 mismatch_score = -1
 gap_penalty = -2
 slippage_gap_penalty = None
 
-score, S_alg, T_alg = align(S, T)
+score, alignments = align(S, T)
 print("Alignment score:", score, "\n")
 
-# Print all optimal alignments
-print("S:", "".join(S_alg))
-print("T:", "".join(T_alg))
-verify_alignment_score(S_alg, T_alg, score)
-
-print("")
+for i, alignment in enumerate(alignments):
+    print("Alignment", i)
+    print(alignment[0])
+    print(alignment[1])
+    verify_alignment_score(alignment[0], alignment[1], score)
+    print()
