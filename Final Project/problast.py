@@ -109,7 +109,7 @@ def gen_query_sequence(
     query_sequence = add_substitutions(query_sequence, substitution_rate)
     query_sequence = add_indels(query_sequence, deletion_rate, insertion_rate)
 
-    return "".join(query_sequence)
+    return "".join(query_sequence), start_pos
 
 
 def score_alignment(query, reference, probability_array):
@@ -133,36 +133,68 @@ def score_alignment(query, reference, probability_array):
     return score
 
 
-def find_probabilistic_matches(
-    query, probability_array, index, w, score_threshold, confidence_threshold
-):
-    candidates = []
+# def find_probabilistic_matches(
+#     query, probability_array, index, w, score_threshold, confidence_threshold
+# ):
+#     candidates = []
 
-    # Slide window over query sequence
-    for query_start in range(len(query) - w + 1):
-        query_wmer = query[query_start : query_start + w]
+#     # Slide window over query sequence
+#     for query_start in range(len(query) - w + 1):
+#         query_wmer = query[query_start : query_start + w]
 
-        # Iterate over all w-mers in the index to allow partial matching
-        for ref_wmer, ref_entries in index.items():
-            # Calculate the probabilistic match score between the query and the reference w-mer
-            for ref_start, ref_confidence in ref_entries:
-                # Skip low-confidence matches
+#         # Iterate over all w-mers in the index to allow partial matching
+#         for ref_wmer, ref_entries in index.items():
+#             # Calculate the probabilistic match score between the query and the reference w-mer
+#             for ref_start, ref_confidence in ref_entries:
+#                 # Skip low-confidence matches
+#                 if ref_confidence < confidence_threshold:
+#                     continue
+
+#                 ref_probabilities = probability_array[:, ref_start : ref_start + w]
+
+#                 # Compute the probabilistic match score
+#                 raw_score = score_alignment(query_wmer, ref_wmer, ref_probabilities)
+
+#                 # Weight the score by the reference confidence
+#                 weighted_score = raw_score * ref_confidence
+
+#                 # Only add to candidates if igger than the score threshold
+#                 if weighted_score >= score_threshold:
+#                     candidates.append((ref_start, weighted_score))
+
+#     return candidates
+
+def find_probabilistic_matches(query_sequence, probability_array, index, w, score_threshold, confidence_threshold):
+    candidates = []  
+
+    for query_start in range(len(query_sequence) - w + 1):
+        query_wmer = query_sequence[query_start : query_start + w]
+
+        # Check if the query w-mer exists in the index
+        if query_wmer in index:
+            for ref_start, ref_confidence in index[query_wmer]:
+                # Skip low-confidence matches early
                 if ref_confidence < confidence_threshold:
                     continue
-
-                ref_probabilities = probability_array[:, ref_start : ref_start + w]
-
+                
+                ref_wmer = "".join(
+                    rows_to_nucleotides[np.argmax(probability_array[:, ref_start + i])]
+                    for i in range(w)
+                )
+                
                 # Compute the probabilistic match score
-                raw_score = score_alignment(query_wmer, ref_wmer, ref_probabilities)
-
-                # Weight the score by the reference confidence
+                raw_score = score_alignment(
+                    query_wmer, ref_wmer, probability_array[:, ref_start : ref_start + w]
+                )
+                
+                # Weight the score by the reference w-mer confidence
                 weighted_score = raw_score * ref_confidence
 
-                # Only add to candidates if igger than the score threshold
                 if weighted_score >= score_threshold:
                     candidates.append((ref_start, weighted_score))
 
     return candidates
+
 
 
 def ungapped_extension_probabilistic(
@@ -223,87 +255,79 @@ def gapped_extension(query, probability_array, candidate_start, gap_penalty):
     query_len = len(query)
     reference_len = probability_array.shape[1]
 
-    # Initialize DP table with zero values
-    dp = np.zeros((query_len + 1, reference_len + 1))
-    trace = np.zeros((query_len + 1, reference_len + 1), dtype=int)  # 0: diagonal, 1: up, 2: left
+    # Limit the alignment range to avoid out-of-bounds access
+    max_j = min(reference_len - candidate_start, query_len)
 
-    # Initialization: first row and first column for gaps (insertion/deletion)
-    for i in range(1, query_len + 1):
-        dp[i, 0] = -gap_penalty * i
-        trace[i, 0] = 1  # '1' means up (deletion)
-    for j in range(1, reference_len + 1):
-        dp[0, j] = -gap_penalty * j
-        trace[0, j] = 2  # '2' means left (insertion)
+    # Initialize scoring matrix and traceback matrix
+    dp = np.zeros((query_len + 1, max_j + 1))
+    traceback = np.zeros((query_len + 1, max_j + 1), dtype=int)
 
-    # Fill the DP table with match/mismatch, gap penalties for insertion/deletion
+    # Define directions for traceback
+    DIAG, UP, LEFT = 1, 2, 3
+
+    # Initialize scoring matrix
     for i in range(1, query_len + 1):
-        for j in range(1, reference_len + 1):
+        dp[i, 0] = dp[i - 1, 0] - gap_penalty
+        traceback[i, 0] = UP
+    for j in range(1, max_j + 1):
+        dp[0, j] = dp[0, j - 1] - gap_penalty
+        traceback[0, j] = LEFT
+
+    # Fill in the scoring matrix
+    for i in range(1, query_len + 1):
+        for j in range(1, max_j + 1):
             query_nucleotide = query[i - 1]
-            ref_nucleotide = rows_to_nucleotides[np.argmax(probability_array[:, j - 1])]
+            ref_pos = candidate_start + j - 1
 
-            match_prob = probability_array[nucleotides_to_rows[query_nucleotide], j - 1]
+            # Ensure ref_pos does not exceed probability_array bounds
+            if ref_pos >= reference_len:
+                continue
 
-            # Match/Mismatch score
-            match_score = dp[i - 1, j - 1] + (match_prob if query_nucleotide == ref_nucleotide else -match_prob)
-            insertion_score = dp[i, j - 1] - gap_penalty  # insertion penalty
-            deletion_score = dp[i - 1, j] - gap_penalty   # deletion penalty
+            match_prob = probability_array[nucleotides_to_rows[query_nucleotide], ref_pos]
+            mismatch_prob = 1 - match_prob
 
-            dp[i, j] = max(match_score, insertion_score, deletion_score)
+            diag_score = dp[i - 1, j - 1] + (
+                match_prob
+                if query_nucleotide == rows_to_nucleotides[np.argmax(probability_array[:, ref_pos])]
+                else -mismatch_prob
+            )
+            up_score = dp[i - 1, j] - gap_penalty
+            left_score = dp[i, j - 1] - gap_penalty
 
-            if dp[i, j] == match_score:
-                trace[i, j] = 0  # diagonal (match/mismatch)
-            elif dp[i, j] == insertion_score:
-                trace[i, j] = 2  # left (insertion)
+            dp[i, j] = max(diag_score, up_score, left_score)
+
+            # Traceback
+            if dp[i, j] == diag_score:
+                traceback[i, j] = DIAG
+            elif dp[i, j] == up_score:
+                traceback[i, j] = UP
             else:
-                trace[i, j] = 1  # up (deletion)
+                traceback[i, j] = LEFT
 
-    # Start traceback from the bottom-right corner of the DP table
+    # Traceback to get the alignment
     aligned_query = []
     aligned_reference = []
-    i, j = query_len, candidate_start + query_len
 
-    # Ensure that the starting point does not go out of bounds
-    if j > reference_len:
-        print(f"Error: candidate_start + query_len exceeds reference sequence length.")
-        return 0, "", ""  # return early with error
-
-    while i > 0 and j > 0:
-        # Ensure we are within bounds during traceback
-        if i <= 0 or j <= 0:
-            break
-
-        if trace[i, j] == 0:  # diagonal (match/mismatch)
+    i, j = query_len, max_j
+    while i > 0 or j > 0:
+        if traceback[i, j] == DIAG:
             aligned_query.append(query[i - 1])
-            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
+            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, candidate_start + j - 1])])
             i -= 1
             j -= 1
-        elif trace[i, j] == 1:  # up (deletion)
+        elif traceback[i, j] == UP:
             aligned_query.append(query[i - 1])
-            aligned_reference.append("-")
+            aligned_reference.append('-')
             i -= 1
-        elif trace[i, j] == 2:  # left (insertion)
-            aligned_query.append("-")
-            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
+        elif traceback[i, j] == LEFT:
+            aligned_query.append('-')
+            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, candidate_start + j - 1])])
             j -= 1
 
-    # If there are remaining query nucleotides or reference nucleotides
-    while i > 0:
-        aligned_query.append(query[i - 1])
-        aligned_reference.append("-")
-        i -= 1
+    aligned_query.reverse()
+    aligned_reference.reverse()
 
-    while j > 0:
-        aligned_query.append("-")
-        aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
-        j -= 1
-
-    # Reverse to get the correct order
-    aligned_query = ''.join(aligned_query[::-1])
-    aligned_reference = ''.join(aligned_reference[::-1])
-
-    # Return the final gapped score and alignments
-    gapped_score = dp[query_len, candidate_start + query_len]
-    return gapped_score, aligned_query, aligned_reference
+    return dp[query_len, max_j], ''.join(aligned_query), ''.join(aligned_reference)
 
 
 
@@ -322,21 +346,21 @@ if __name__ == "__main__":
     # hyperparameters #
     ###################
     # ----- Indexing ------ #
-    w = 2  # the w-mer
-    threshold = 0.8  # threshold used to create w-mer index
-    HSP_score_threshold = -4
+    w = 12  # the w-mer
+    threshold = 0.90  # threshold used to create w-mer index
+    # HSP_score_threshold = -4
 
 
     # ----- Query Generation ------ #
-    query_length = 7
+    query_length = 100
     substitution_rate = 0  # in %
     deletion_rate = 0  # in %
     insertion_rate = 0  # in %
 
     # ----- scoring ------ #
-    score_threshold = 0
-    confidence_threshold = 0
-    gap_penalty = 0
+    score_threshold = 0.5
+    confidence_threshold = 0.6
+    gap_penalty = 0.5
 
     # avg_mismatch_penalty = np.mean(1 - probability_array.max(axis=0))
     # gap_penalty = avg_mismatch_penalty * 1.5
@@ -346,17 +370,17 @@ if __name__ == "__main__":
     #####################
     sequence, probability_array = read_inputs(sequence_dir, confidence_dir)
 
-    ### for testing
-    sequence = sequence[:20]
-    probability_array = probability_array[:, :20]
-    w = 5
+    # FOR TESTING
+    # sequence = sequence[:5]
+    # probability_array = probability_array[:, :5]
+
     ###############
     # start_time = time.time()
     index = build_index(probability_array, w, confidence_threshold)
     # execution_time = time.time() - start_time
     # print(f"Indexing took {execution_time:.4f} seconds")
 
-    q = gen_query_sequence(
+    q, true_start_pos = gen_query_sequence(
         probability_array,
         query_length,
         substitution_rate,
@@ -364,22 +388,19 @@ if __name__ == "__main__":
         insertion_rate,
     )
 
-    print(q)
-    print(sequence)
-    print("0123456789")
-    # print(probability_array)
-
+    print("True Start Position:", true_start_pos)
 
     candidates = find_probabilistic_matches(
         q, probability_array, index, w, score_threshold, confidence_threshold
     )
 
-    print(candidates)
+    print(f"Found {len(candidates)} candidates")
 
     # Number of top x% HSPs to keep
     x_percent = 10  # For example, keep the top 10% of HSPs
     HSPs = []
 
+    print("Starting ungapped extension")
     # Filter HSPs based on extension score >= HSP_score_threshold
     for candidate_start, _ in candidates:
         extension_score = ungapped_extension_probabilistic(
@@ -389,15 +410,19 @@ if __name__ == "__main__":
         # if extension_score >= HSP_score_threshold:
         HSPs.append((candidate_start, extension_score))
 
-    # Sort HSPs by extension score in descending order
+    # # Sort HSPs by extension score in descending order
     HSPs = sorted(HSPs, key=lambda x: x[1], reverse=True)
 
-    # Keep only the top x% of HSPs
-    # top_x_count = int(len(HSPs) * x_percent / 100)
-    top_x_count = 3
+    # # Keep only the top x% of HSPs
+    # # top_x_count = int(len(HSPs) * x_percent / 100)
+    top_x_count = 5
     HSPs_filtered = HSPs[:top_x_count]
+    HSPs = HSPs_filtered
 
-    print(f"Number of HSPs after filtering by top {x_percent}%:", len(HSPs))
+    print(HSPs)
+    # # print(f"Number of HSPs after filtering by top {x_percent}%:", len(HSPs))
+
+    print("Starting gapped extension")
 
     # Perform gapped extension for the top x% of HSPs and store the results
     gapped_results = []
@@ -409,14 +434,17 @@ if __name__ == "__main__":
 
     # Sort the gapped results by gapped_score in descending order
     gapped_results = sorted(gapped_results, key=lambda x: x[0], reverse=True)
+    
+
+    print("Query", q)
 
     # Output the sorted gapped extension results
     count = 1
     for gapped_score, candidate_start, aligned_query, aligned_reference in gapped_results:
-        if len(aligned_reference) != len(sequence):
-            break
+        # if len(aligned_reference) != len(sequence):
+        #     break
         print(f"HSP{count}", count)
-        print(f"Candidate start: {candidate_start}, Gapped score: {gapped_score}")
+        # print(f"Candidate start: {candidate_start}, Gapped score: {gapped_score}")
         print(f"Query Alignment: {aligned_query}")
         print(f"Reference Alignment: {aligned_reference}")
         count += 1
