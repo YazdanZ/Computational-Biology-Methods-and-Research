@@ -219,91 +219,79 @@ def ungapped_extension_probabilistic(
 
     return alg_score
 
-
-def gapped_extension(query, probability_array, candidate_start, gap_penalty):
+def gapped_extension(
+    query, probability_array, candidate_start, gap_penalty
+):
     query_len = len(query)
     reference_len = probability_array.shape[1]
 
-    # Initialize DP table and traceback
+    # Initialize the dynamic programming (DP) table
     dp = np.zeros((query_len + 1, reference_len + 1))
-    traceback = np.full((query_len + 1, reference_len + 1), None, dtype=object)
-
-    # Initialize DP table boundaries
-    for i in range(1, query_len + 1):
-        dp[i, 0] = dp[i - 1, 0] - gap_penalty
-        traceback[i, 0] = "UP"
-
+    
+    # Fill the first row and first column of the DP table
     for j in range(1, reference_len + 1):
-        dp[0, j] = dp[0, j - 1] - gap_penalty
-        traceback[0, j] = "LEFT"
+        dp[0][j] = dp[0][j - 1] - gap_penalty  # Penalty for gaps in the query
 
-    # Fill DP table
+    for i in range(1, query_len + 1):
+        dp[i][0] = -gap_penalty * i  # Penalty for gaps in the reference
+
+    # Fill the DP table using modified version of probabilistic scoring
     for i in range(1, query_len + 1):
         for j in range(1, reference_len + 1):
             query_nucleotide = query[i - 1]
+            ref_probs = probability_array[:, j - 1]
+            match_prob = ref_probs[nucleotides_to_rows[query_nucleotide]]
 
-            # Ensure the index stays within bounds
-            index = min(candidate_start + j - 1, probability_array.shape[1] - 1)
-            ref_probs = probability_array[:, index]
+            # Calculate scores for match, mismatch, and gap
+            match_score = dp[i - 1][j - 1] + match_prob
+            mismatch_score = dp[i - 1][j - 1] - (1 - match_prob)
+            gap_in_query = dp[i][j - 1] - gap_penalty
+            gap_in_reference = dp[i - 1][j] - gap_penalty
 
-            # Match/mismatch score based on reference probabilities
-            match_score = ref_probs[nucleotides_to_rows[query_nucleotide]]
-            mismatch_penalty = 1 - match_score
+            dp[i][j] = max(match_score, mismatch_score, gap_in_query, gap_in_reference)
 
-            diagonal_score = dp[i - 1, j - 1] + (
-                match_score
-                if query_nucleotide == rows_to_nucleotides[np.argmax(ref_probs)]
-                else -mismatch_penalty
-            )
-            up_score = dp[i - 1, j] - gap_penalty
-            left_score = dp[i, j - 1] - gap_penalty
-
-            dp[i, j] = max(diagonal_score, up_score, left_score)
-
-            # Traceback
-            if dp[i, j] == diagonal_score:
-                traceback[i, j] = "DIAG"
-            elif dp[i, j] == up_score:
-                traceback[i, j] = "UP"
-            else:
-                traceback[i, j] = "LEFT"
-
-    # Traceback to build alignment
+    # Backtrack to find the alignment
     aligned_query = []
     aligned_reference = []
-    i, j = query_len, reference_len
+    i, j = query_len, candidate_start + query_len  # Start backtracking from the bottom right
 
-    while i > 0 or j > 0:
-        # Ensure candidate_start + j - 1 is within bounds during traceback
-        index = min(candidate_start + j - 1, probability_array.shape[1] - 1)
-
-        if traceback[i, j] == "DIAG":
+    while i > 0 and j > 0:
+        if dp[i][j] == dp[i - 1][j - 1] + probability_array[nucleotides_to_rows[query[i - 1]], j - 1]:
             aligned_query.append(query[i - 1])
-            aligned_reference.append(
-                rows_to_nucleotides[np.argmax(probability_array[:, index])]
-            )
+            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
             i -= 1
             j -= 1
-        elif traceback[i, j] == "UP":
+        elif dp[i][j] == dp[i - 1][j - 1] - (1 - probability_array[nucleotides_to_rows[query[i - 1]], j - 1]):
             aligned_query.append(query[i - 1])
-            aligned_reference.append("-")
+            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
             i -= 1
-        elif traceback[i, j] == "LEFT":
-            aligned_query.append("-")
-            aligned_reference.append(
-                rows_to_nucleotides[np.argmax(probability_array[:, index])]
-            )
             j -= 1
+        elif dp[i][j] == dp[i][j - 1] - gap_penalty:
+            aligned_query.append('-')
+            aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
+            j -= 1
+        else:
+            aligned_query.append(query[i - 1])
+            aligned_reference.append('-')
+            i -= 1
 
-    # Reverse to correct order
-    aligned_query = aligned_query[::-1]
-    aligned_reference = aligned_reference[::-1]
+    # Add remaining gaps if necessary
+    while i > 0:
+        aligned_query.append(query[i - 1])
+        aligned_reference.append('-')
+        i -= 1
 
-    return (
-        dp[query_len, reference_len],
-        "".join(aligned_query),
-        "".join(aligned_reference),
-    )
+    while j > 0:
+        aligned_query.append('-')
+        aligned_reference.append(rows_to_nucleotides[np.argmax(probability_array[:, j - 1])])
+        j -= 1
+
+    aligned_query.reverse()
+    aligned_reference.reverse()
+
+    gapped_score = dp[query_len][candidate_start + query_len]
+    return gapped_score, ''.join(aligned_query), ''.join(aligned_reference)
+
 
 
 if __name__ == "__main__":
@@ -321,11 +309,13 @@ if __name__ == "__main__":
     # hyperparameters #
     ###################
     # ----- Indexing ------ #
-    w = 12  # the w-mer
+    w = 2  # the w-mer
     threshold = 0.8  # threshold used to create w-mer index
     HSP_score_threshold = -4
+
+
     # ----- Query Generation ------ #
-    query_length = 12
+    query_length = 3
     substitution_rate = 0  # in %
     deletion_rate = 0  # in %
     insertion_rate = 0  # in %
@@ -334,6 +324,7 @@ if __name__ == "__main__":
     score_threshold = 0.7
     confidence_threshold = 0.6
     gap_penalty = 0.5
+
     # avg_mismatch_penalty = np.mean(1 - probability_array.max(axis=0))
     # gap_penalty = avg_mismatch_penalty * 1.5
 
@@ -343,9 +334,9 @@ if __name__ == "__main__":
     sequence, probability_array = read_inputs(sequence_dir, confidence_dir)
 
     ### for testing
-    sequence = sequence[:20]
-    probability_array = probability_array[:, :20]
-    w = 10
+    sequence = sequence[:5]
+    probability_array = probability_array[:, :5]
+    w = 2
     ###############
     # start_time = time.time()
     index = build_index(probability_array, w, confidence_threshold)
@@ -360,35 +351,84 @@ if __name__ == "__main__":
         insertion_rate,
     )
 
+    print(q)
+    print(sequence)
+    print("0123456789")
+    # print(probability_array)
+
+
     candidates = find_probabilistic_matches(
         q, probability_array, index, w, score_threshold, confidence_threshold
     )
 
+    print(candidates)
+
+    # Number of top x% HSPs to keep
+    x_percent = 10  # For example, keep the top 10% of HSPs
     HSPs = []
+
+    # Filter HSPs based on extension score >= HSP_score_threshold
     for candidate_start, _ in candidates:
         extension_score = ungapped_extension_probabilistic(
             q, probability_array, candidate_start, w, gap_penalty
         )
-        # print(f"Candidate start: {candidate_start}, Extension score: {extension_score}")
-        if extension_score >= HSP_score_threshold:
-            HSPs.append((candidate_start, extension_score))
+        print(f"Candidate start: {candidate_start}, Extension score: {extension_score}")
+        # if extension_score >= HSP_score_threshold:
+        HSPs.append((candidate_start, extension_score))
 
-    print(len(HSPs))
-    count = 0
+    # Sort HSPs by extension score in descending order
+    HSPs = sorted(HSPs, key=lambda x: x[1], reverse=True)
+
+    # Keep only the top x% of HSPs
+    # top_x_count = int(len(HSPs) * x_percent / 100)
+    top_x_count = 3
+    HSPs_filtered = HSPs[:top_x_count]
+
+    print(f"Number of HSPs after filtering by top {x_percent}%:", len(HSPs))
+
+    # Perform gapped extension for the top x% of HSPs and store the results
+    gapped_results = []
     for candidate_start, ungapped_score in HSPs:
-        print(count)
-        count += 1
         gapped_score, aligned_query, aligned_reference = gapped_extension(
             q, probability_array, candidate_start, gap_penalty
         )
+        gapped_results.append((gapped_score, candidate_start, aligned_query, aligned_reference))
+
+    # Sort the gapped results by gapped_score in descending order
+    gapped_results = sorted(gapped_results, key=lambda x: x[0], reverse=True)
+
+    # Output the sorted gapped extension results
+    count = 1
+    for gapped_score, candidate_start, aligned_query, aligned_reference in gapped_results:
+        print(f"HSP{count}", count)
         print(f"Candidate start: {candidate_start}, Gapped score: {gapped_score}")
         print(f"Query Alignment: {aligned_query}")
         print(f"Reference Alignment: {aligned_reference}")
-
-    # print(q)
-    # print(sequence)
-    # print("0123456789")
-    # print(probability_array)
-    # print(candidates)
+        count += 1
 
     sys.exit()
+
+
+
+    # HSPs = []
+    # for candidate_start, _ in candidates:
+    #     extension_score = ungapped_extension_probabilistic(
+    #         q, probability_array, candidate_start, w, gap_penalty
+    #     )
+    #     print(f"Candidate start: {candidate_start}, Extension score: {extension_score}")
+    #     if extension_score >= HSP_score_threshold:
+    #         HSPs.append((candidate_start, extension_score))
+
+    # print("Number of HSPs:", len(HSPs))
+    # count = 1
+    # for candidate_start, ungapped_score in HSPs:
+    #     print(f"HSP{count}", count)
+    #     count += 1
+    #     gapped_score, aligned_query, aligned_reference = gapped_extension(
+    #         q, probability_array, candidate_start, gap_penalty
+    #     )
+    #     print(f"Candidate start: {candidate_start}, Gapped score: {gapped_score}")
+    #     print(f"Query Alignment: {aligned_query}")
+    #     print(f"Reference Alignment: {aligned_reference}")
+
+    # sys.exit()
