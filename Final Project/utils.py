@@ -91,7 +91,7 @@ def add_indels(sequence, deletion_rate, insertion_rate):
 
 
 def gen_query_sequence(
-    probability_array, query_length, substitution_rate, deletion_rate, insertion_rate
+    probability_array, query_length, substitution_rate, deletion_rate, insertion_rate, sanity=False
 ):
     # pick a random starting position
     start_pos = random.randint(0, probability_array.shape[1] - query_length)
@@ -101,6 +101,8 @@ def gen_query_sequence(
     for i in range(query_length):
         position_probs = probability_array[:, start_pos + i]
         nucleotide = np.random.choice([0, 1, 2, 3], p=position_probs)
+        if sanity:
+            nucleotide = np.argmax(probability_array[:, start_pos + i])
         query_sequence += PARAMS.rows_to_nucleotides[nucleotide]
 
     query_sequence = list(
@@ -343,3 +345,4 @@ def gapped_extension(query, probability_array, candidate_start, gap_penalty):
     aligned_reference.reverse()
 
     return dp[query_len, max_j], "".join(aligned_query), "".join(aligned_reference)
+

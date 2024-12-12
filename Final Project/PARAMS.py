@@ -5,16 +5,16 @@ rows_to_nucleotides = {0: "A", 1: "C", 2: "G", 3: "T"}
 nucleotides_to_rows = {"A": 0, "C": 1, "G": 2, "T": 3}
 
 # ----- Indexing ------ #
-w = 12  # the w-mer
+w = 6  # the w-mer
 threshold = 0.90  # threshold used to create w-mer index
 # HSP_score_threshold = -4
 
 
 # ----- Query Generation ------ #
-query_length = 100
-substitution_rate = 2  # in %
-deletion_rate = 2  # in %
-insertion_rate = 2  # in %
+query_length = 500
+substitution_rate = 5  # in %
+deletion_rate = 5  # in %
+insertion_rate = 5  # in %
 
 # ----- scoring ------ #
 score_threshold = 0.5
